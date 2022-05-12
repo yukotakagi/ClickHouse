@@ -363,7 +363,7 @@ if __name__ == "__main__":
         args.compiler,
         args.sanitizer,
         args.package_type,
-        image_type,
+        args.package_type,
         args.cache,
         args.distcc_hosts,
         args.split_binary,
