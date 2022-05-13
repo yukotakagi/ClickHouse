@@ -60,11 +60,14 @@ static inline bool likePatternIsStrstr(const String & pattern, String & res)
     return true;
 }
 
-/** 'like' - if true, treat pattern as SQL LIKE or ILIKE; if false - treat pattern as re2 regexp.
+/** 'like'             - if true, treat pattern as SQL LIKE, otherwise as re2 regexp.
+ *  'negate'           - if true, negate result
+ *  'case_insensitive' - if true, match case insensitively
+ *
   * NOTE: We want to run regexp search for whole columns by one call (as implemented in function 'position')
   *  but for that, regexp engine must support \0 bytes and their interpretation as string boundaries.
   */
-template <typename Name, bool like, bool revert = false, bool case_insensitive = false>
+template <typename Name, bool like, bool negate, bool case_insensitive>
 struct MatchImpl
 {
     static constexpr bool use_default_implementation_for_constants = true;
@@ -78,8 +81,8 @@ struct MatchImpl
           VolnitskyUTF8>;
 
     static void vectorConstant(
-        const ColumnString::Chars & data,
-        const ColumnString::Offsets & offsets,
+        const ColumnString::Chars & haystack_data,
+        const ColumnString::Offsets & haystack_offsets,
         const String & pattern,
         const ColumnPtr & start_pos,
         PaddedPODArray<UInt8> & res)
@@ -88,15 +91,15 @@ struct MatchImpl
             throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
                     "Function '{}' doesn't support start_pos argument", name);
 
-        if (offsets.empty())
+        if (haystack_offsets.empty())
             return;
 
         /// A simple case where the [I]LIKE expression reduces to finding a substring in a string
         String strstr_pattern;
         if (like && likePatternIsStrstr(pattern, strstr_pattern))
         {
-            const UInt8 * const begin = data.data();
-            const UInt8 * const end = data.data() + data.size();
+            const UInt8 * const begin = haystack_data.data();
+            const UInt8 * const end = haystack_data.data() + haystack_data.size();
             const UInt8 * pos = begin;
 
             /// The current index in the array of strings.
@@ -109,30 +112,28 @@ struct MatchImpl
             while (pos < end && end != (pos = searcher.search(pos, end - pos)))
             {
                 /// Let's determine which index it refers to.
-                while (begin + offsets[i] <= pos)
+                while (begin + haystack_offsets[i] <= pos)
                 {
-                    res[i] = revert;
+                    res[i] = negate;
                     ++i;
                 }
 
                 /// We check that the entry does not pass through the boundaries of strings.
-                if (pos + strstr_pattern.size() < begin + offsets[i])
-                    res[i] = !revert;
+                if (pos + strstr_pattern.size() < begin + haystack_offsets[i])
+                    res[i] = !negate;
                 else
-                    res[i] = revert;
+                    res[i] = negate;
 
-                pos = begin + offsets[i];
+                pos = begin + haystack_offsets[i];
                 ++i;
             }
 
             /// Tail, in which there can be no substring.
             if (i < res.size())
-                memset(&res[i], revert, (res.size() - i) * sizeof(res[0]));
+                memset(&res[i], negate, (res.size() - i) * sizeof(res[0]));
         }
         else
         {
-            size_t size = offsets.size();
-
             auto regexp = Regexps::get<like, true, case_insensitive>(pattern);
 
             String required_substring;
@@ -141,28 +142,30 @@ struct MatchImpl
 
             regexp->getAnalyzeResult(required_substring, is_trivial, required_substring_is_prefix);
 
+            size_t haystack_size = haystack_offsets.size();
+
             if (required_substring.empty())
             {
                 if (!regexp->getRE2()) /// An empty regexp. Always matches.
                 {
-                    if (size)
-                        memset(res.data(), 1, size * sizeof(res[0]));
+                    if (haystack_size)
+                        memset(res.data(), 1, haystack_size * sizeof(res[0]));
                 }
                 else
                 {
                     size_t prev_offset = 0;
-                    for (size_t i = 0; i < size; ++i)
+                    for (size_t i = 0; i < haystack_size; ++i)
                     {
-                        res[i] = revert
+                        res[i] = negate
                             ^ regexp->getRE2()->Match(
-                                  re2_st::StringPiece(reinterpret_cast<const char *>(&data[prev_offset]), offsets[i] - prev_offset - 1),
+                                  Regexps::Regexp::StringPieceType(reinterpret_cast<const char *>(&haystack_data[prev_offset]), haystack_offsets[i] - prev_offset - 1),
                                   0,
-                                  offsets[i] - prev_offset - 1,
+                                  haystack_offsets[i] - prev_offset - 1,
                                   re2_st::RE2::UNANCHORED,
                                   nullptr,
                                   0);
 
-                        prev_offset = offsets[i];
+                        prev_offset = haystack_offsets[i];
                     }
                 }
             }
@@ -170,8 +173,8 @@ struct MatchImpl
             {
                 /// NOTE This almost matches with the case of LikePatternIsStrstr.
 
-                const UInt8 * const begin = data.data();
-                const UInt8 * const end = data.begin() + data.size();
+                const UInt8 * const begin = haystack_data.data();
+                const UInt8 * const end = haystack_data.begin() + haystack_data.size();
                 const UInt8 * pos = begin;
 
                 /// The current index in the array of strings.
@@ -183,23 +186,23 @@ struct MatchImpl
                 while (pos < end && end != (pos = searcher.search(pos, end - pos)))
                 {
                     /// Determine which index it refers to.
-                    while (begin + offsets[i] <= pos)
+                    while (begin + haystack_offsets[i] <= pos)
                     {
-                        res[i] = revert;
+                        res[i] = negate;
                         ++i;
                     }
 
                     /// We check that the entry does not pass through the boundaries of strings.
-                    if (pos + required_substring.size() < begin + offsets[i])
+                    if (pos + required_substring.size() < begin + haystack_offsets[i])
                     {
                         /// And if it does not, if necessary, we check the regexp.
 
                         if (is_trivial)
-                            res[i] = !revert;
+                            res[i] = !negate;
                         else
                         {
-                            const char * str_data = reinterpret_cast<const char *>(&data[offsets[i - 1]]);
-                            size_t str_size = offsets[i] - offsets[i - 1] - 1;
+                            const char * str_data = reinterpret_cast<const char *>(&haystack_data[haystack_offsets[i - 1]]);
+                            size_t str_size = haystack_offsets[i] - haystack_offsets[i - 1] - 1;
 
                             /** Even in the case of `required_substring_is_prefix` use UNANCHORED check for regexp,
                               *  so that it can match when `required_substring` occurs into the string several times,
@@ -207,37 +210,39 @@ struct MatchImpl
                               */
 
                             if (required_substring_is_prefix)
-                                res[i] = revert
+                                res[i] = negate
                                     ^ regexp->getRE2()->Match(
-                                          re2_st::StringPiece(str_data, str_size),
+                                          Regexps::Regexp::StringPieceType(str_data, str_size),
                                           reinterpret_cast<const char *>(pos) - str_data,
                                           str_size,
                                           re2_st::RE2::UNANCHORED,
                                           nullptr,
                                           0);
                             else
-                                res[i] = revert
+                                res[i] = negate
                                     ^ regexp->getRE2()->Match(
-                                          re2_st::StringPiece(str_data, str_size), 0, str_size, re2_st::RE2::UNANCHORED, nullptr, 0);
+                                          Regexps::Regexp::StringPieceType(str_data, str_size), 0, str_size, re2_st::RE2::UNANCHORED, nullptr, 0);
                         }
                     }
                     else
-                        res[i] = revert;
+                        res[i] = negate;
 
-                    pos = begin + offsets[i];
+                    pos = begin + haystack_offsets[i];
                     ++i;
                 }
 
                 /// Tail, in which there can be no substring.
                 if (i < res.size())
-                    memset(&res[i], revert, (res.size() - i) * sizeof(res[0]));
+                    memset(&res[i], negate, (res.size() - i) * sizeof(res[0]));
             }
         }
     }
 
     /// Very carefully crafted copy-paste.
     static void vectorFixedConstant(
-        const ColumnString::Chars & data, size_t n, const String & pattern,
+        const ColumnString::Chars & data,
+        size_t n,
+        const String & pattern,
         PaddedPODArray<UInt8> & res)
     {
         if (data.empty())
@@ -247,9 +252,9 @@ struct MatchImpl
         String strstr_pattern;
         if (like && likePatternIsStrstr(pattern, strstr_pattern))
         {
-            const UInt8 * begin = data.data();
+            const UInt8 * const begin = data.data();
+            const UInt8 * const end = data.data() + data.size();
             const UInt8 * pos = begin;
-            const UInt8 * end = pos + data.size();
 
             size_t i = 0;
             const UInt8 * next_pos = begin;
@@ -265,7 +270,7 @@ struct MatchImpl
                     /// Let's determine which index it refers to.
                     while (next_pos + n <= pos)
                     {
-                        res[i] = revert;
+                        res[i] = negate;
                         next_pos += n;
                         ++i;
                     }
@@ -273,9 +278,9 @@ struct MatchImpl
 
                     /// We check that the entry does not pass through the boundaries of strings.
                     if (pos + strstr_pattern.size() <= next_pos)
-                        res[i] = !revert;
+                        res[i] = !negate;
                     else
-                        res[i] = revert;
+                        res[i] = negate;
 
                     pos = next_pos;
                     ++i;
@@ -284,12 +289,10 @@ struct MatchImpl
 
             /// Tail, in which there can be no substring.
             if (i < res.size())
-                memset(&res[i], revert, (res.size() - i) * sizeof(res[0]));
+                memset(&res[i], negate, (res.size() - i) * sizeof(res[0]));
         }
         else
         {
-            size_t size = data.size() / n;
-
             auto regexp = Regexps::get<like, true, case_insensitive>(pattern);
 
             String required_substring;
@@ -297,6 +300,8 @@ struct MatchImpl
             bool required_substring_is_prefix; /// for `anchored` execution of the regexp.
 
             regexp->getAnalyzeResult(required_substring, is_trivial, required_substring_is_prefix);
+
+            size_t size = data.size() / n;
 
             if (required_substring.empty())
             {
@@ -310,9 +315,9 @@ struct MatchImpl
                     size_t offset = 0;
                     for (size_t i = 0; i < size; ++i)
                     {
-                        res[i] = revert
+                        res[i] = negate
                             ^ regexp->getRE2()->Match(
-                                  re2_st::StringPiece(reinterpret_cast<const char *>(&data[offset]), n),
+                                  Regexps::Regexp::StringPieceType(reinterpret_cast<const char *>(&data[offset]), n),
                                   0,
                                   n,
                                   re2_st::RE2::UNANCHORED,
@@ -327,9 +332,9 @@ struct MatchImpl
             {
                 /// NOTE This almost matches with the case of LikePatternIsStrstr.
 
-                const UInt8 * begin = data.data();
+                const UInt8 * const begin = data.data();
+                const UInt8 * const end = data.data() + data.size();
                 const UInt8 * pos = begin;
-                const UInt8 * end = pos + data.size();
 
                 size_t i = 0;
                 const UInt8 * next_pos = begin;
@@ -345,7 +350,7 @@ struct MatchImpl
                         /// Let's determine which index it refers to.
                         while (next_pos + n <= pos)
                         {
-                            res[i] = revert;
+                            res[i] = negate;
                             next_pos += n;
                             ++i;
                         }
@@ -356,7 +361,7 @@ struct MatchImpl
                             /// And if it does not, if necessary, we check the regexp.
 
                             if (is_trivial)
-                                res[i] = !revert;
+                                res[i] = !negate;
                             else
                             {
                                 const char * str_data = reinterpret_cast<const char *>(next_pos - n);
@@ -367,22 +372,22 @@ struct MatchImpl
                                 */
 
                                 if (required_substring_is_prefix)
-                                    res[i] = revert
+                                    res[i] = negate
                                         ^ regexp->getRE2()->Match(
-                                            re2_st::StringPiece(str_data, n),
+                                            Regexps::Regexp::StringPieceType(str_data, n),
                                             reinterpret_cast<const char *>(pos) - str_data,
                                             n,
                                             re2_st::RE2::UNANCHORED,
                                             nullptr,
                                             0);
                                 else
-                                    res[i] = revert
+                                    res[i] = negate
                                         ^ regexp->getRE2()->Match(
-                                            re2_st::StringPiece(str_data, n), 0, n, re2_st::RE2::UNANCHORED, nullptr, 0);
+                                            Regexps::Regexp::StringPieceType(str_data, n), 0, n, re2_st::RE2::UNANCHORED, nullptr, 0);
                             }
                         }
                         else
-                            res[i] = revert;
+                            res[i] = negate;
 
                         pos = next_pos;
                         ++i;
@@ -391,7 +396,7 @@ struct MatchImpl
 
                 /// Tail, in which there can be no substring.
                 if (i < res.size())
-                    memset(&res[i], revert, (res.size() - i) * sizeof(res[0]));
+                    memset(&res[i], negate, (res.size() - i) * sizeof(res[0]));
             }
         }
     }
