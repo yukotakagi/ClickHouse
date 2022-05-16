@@ -107,8 +107,15 @@ then
     cp -r ../tests/performance "$PERF_OUTPUT"
     cp -r ../tests/config/top_level_domains  "$PERF_OUTPUT"
     cp -r ../docker/test/performance-comparison/config "$PERF_OUTPUT" ||:
-    cp /output/clickhouse* "$PERF_OUTPUT"
-    rm -f "$PERF_OUTPUT"/*.{deb,rpm,apk,tgz} "$PERF_OUTPUT"/clickhouse-*-bridge
+    for SRC in /output/clickhouse*; do
+        # Copy all clickhouse* files except packages and bridges
+        [[ "$SRC" != *.* ]] && [[ "$SRC" != *-bridge ]] && \
+          cp -d "$SRC" "$PERF_OUTPUT"
+    done
+    if [ -x "$PERF_OUTPUT"/clickhouse-keeper ]; then
+        # Replace standalone keeper by symlink
+        ln -sf clickhouse "$PERF_OUTPUT"/clickhouse-keeper
+    fi
 
     cp -r ../docker/test/performance-comparison "$PERF_OUTPUT"/scripts ||:
 
