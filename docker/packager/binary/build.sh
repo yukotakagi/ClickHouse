@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
+set -x -e
 
 exec &> >(ts)
-set -x -e
 
 cache_status () {
     ccache --show-config ||:
     ccache --show-stats ||:
 }
 
-git config --global --add safe.directory /build
+[ -O /build ] || git config --global --add safe.directory /build
 
 mkdir -p /build/cmake/toolchain/darwin-x86_64
 tar xJf /MacOSX11.0.sdk.tar.xz -C /build/cmake/toolchain/darwin-x86_64 --strip-components=1
