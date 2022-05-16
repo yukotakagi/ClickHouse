@@ -401,17 +401,88 @@ struct MatchImpl
         }
     }
 
-    template <typename... Args>
-    static void vectorVector(Args &&...)
+    static void vectorVector(
+        const ColumnString::Chars & haystack_data,
+        const ColumnString::Offsets & haystack_offsets,
+        const ColumnString::Chars & needle_data,
+        const ColumnString::Offsets & needle_offset,
+        const ColumnPtr & start_pos,
+        PaddedPODArray<UInt8> & res)
     {
-        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Function '{}' doesn't support non-constant needle argument", name);
+        if (haystack_offsets.size() != needle_offset.size())
+            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "Function '{}' unexpectedly received a different number of haystacks and needles", name);
+
+        if (start_pos != nullptr)
+            throw Exception(ErrorCodes::ILLEGAL_TYPE_OF_ARGUMENT,
+                    "Function '{}' doesn't support start_pos argument", name);
+
+        if (haystack_offsets.empty())
+            return;
+
+        size_t haystack_size = haystack_offsets.size();
+
+        String required_substr;
+        bool is_trivial;
+        bool required_substring_is_prefix; /// for `anchored` execution of the regexp.
+
+        size_t prev_haystack_offset = 0;
+        size_t prev_needle_offset = 0;
+
+        for (size_t i = 0; i < haystack_size; ++i)
+        {
+            const auto * const cur_haystack_data = &haystack_data[prev_haystack_offset];
+            const size_t cur_haystack_offset = haystack_offsets[i] - prev_haystack_offset - 1;
+
+            const auto * const cur_needle_data = &needle_data[prev_needle_offset];
+            const size_t cur_needle_offset = needle_offset[i] - prev_needle_offset - 1;
+
+            const auto & needle = String(
+                    reinterpret_cast<const char *>(cur_needle_data),
+                    cur_needle_offset);
+
+            if (like && likePatternIsStrstr(needle, required_substr))
+            {
+                const auto * const required_substr_data = required_substr.data();
+                const size_t required_substr_size = required_substr.size();
+
+                Searcher searcher(required_substr_data, required_substr_size, cur_haystack_offset - prev_haystack_offset);
+                const auto * match = searcher.search(cur_haystack_data, cur_haystack_offset);
+                res[i] = negate
+                    ^ (match != cur_haystack_data + cur_haystack_offset);
+            }
+            else
+            {
+                // each row is expected to contain a different like/re2 pattern
+                // --> bypass the regexp cache, instead construct the pattern on-the-fly
+                int flags = Regexps::Regexp::RE_DOT_NL;
+                flags |= Regexps::Regexp::RE_NO_CAPTURE;
+                if (case_insensitive)
+                    flags |= Regexps::Regexp::RE_CASELESS;
+
+                const auto & regexp = Regexps::Regexp(Regexps::createRegexp<like>(needle, flags));
+
+                regexp.getAnalyzeResult(required_substr, is_trivial, required_substring_is_prefix);
+
+                res[i] = negate
+                    ^ regexp.getRE2()->Match(
+                                  Regexps::Regexp::StringPieceType(reinterpret_cast<const char *>(cur_haystack_data), cur_haystack_offset),
+                                  0,
+                                  haystack_offsets[i] - prev_haystack_offset - 1,
+                                  re2_st::RE2::UNANCHORED,
+                                  nullptr,
+                                  0);
+            }
+
+            prev_haystack_offset = haystack_offsets[i];
+            prev_needle_offset = needle_offset[i];
+        }
     }
 
-    /// Search different needles in single haystack.
     template <typename... Args>
     static void constantVector(Args &&...)
     {
-        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Function '{}' doesn't support non-constant needle argument", name);
+        throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Function '{}' doesn't support search with non-constant needles in constant haystack", name);
     }
 };
 

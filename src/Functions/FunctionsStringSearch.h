@@ -83,12 +83,13 @@ public:
 
     bool useDefaultImplementationForConstants() const override { return Impl::use_default_implementation_for_constants; }
 
+    // TODO
     ColumnNumbers getArgumentsThatAreAlwaysConstant() const override
     {
         if (!Impl::use_default_implementation_for_constants)
-            return ColumnNumbers{};
+            return ColumnNumbers{}; // countSubstring(3), position(3)
         if (!Impl::supports_start_pos)
-            return ColumnNumbers{1, 2};
+            return ColumnNumbers{1, 2}; // like(), match(), hasToken()
         return ColumnNumbers{1, 2, 3};
     }
 

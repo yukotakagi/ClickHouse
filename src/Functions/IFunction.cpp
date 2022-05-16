@@ -118,13 +118,15 @@ ColumnPtr IExecutableFunction::defaultImplementationForConstantArguments(
 {
     ColumnNumbers arguments_to_remain_constants = getArgumentsThatAreAlwaysConstant();
 
+    // TODO FunctionStringSearch returns {1,2}, 0 is haystack, 1 is pattern, 2 has meaning only for other string search functions and is
+    // ignored here. We must not return 1 for like ...
     /// Check that these arguments are really constant.
-    for (auto arg_num : arguments_to_remain_constants)
-        if (arg_num < args.size() && !isColumnConst(*args[arg_num].column))
-            throw Exception(ErrorCodes::ILLEGAL_COLUMN,
-                "Argument at index {} for function {} must be constant",
-                toString(arg_num),
-                getName());
+    // for (auto arg_num : arguments_to_remain_constants)
+    //     if (arg_num < args.size() && !isColumnConst(*args[arg_num].column))
+    //         throw Exception(ErrorCodes::ILLEGAL_COLUMN,
+    //             "Argument at index {} for function {} must be constant",
+    //             toString(arg_num),
+    //             getName());
 
     if (args.empty() || !useDefaultImplementationForConstants() || !allArgumentsAreConstants(args))
         return nullptr;
