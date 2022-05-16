@@ -45,11 +45,21 @@ def pre_build(repo_path: str, env_variables: List[str]):
         current_branch = subprocess.check_output(
             "git branch --show-current", shell=True, encoding="utf-8"
         ).strip()
+        is_shallow = (
+            subprocess.check_output(
+                "git rev-parse --is-shallow-repository", shell=True, encoding="utf-8"
+            )
+            == "true\n"
+        )
+        depth = ""
+        if is_shallow:
+            depth = "--depth=60"
         if current_branch != "master":
             cmd = (
-                f"git -C {repo_path} fetch --depth=60 --no-recurse-submodules "
+                f"git -C {repo_path} fetch {depth} --no-recurse-submodules "
                 "--no-tags origin master:master"
             )
+            logging.info("Getting master branch for performance artifact: ''%s'", cmd)
             subprocess.check_call(cmd, shell=True)
 
 
