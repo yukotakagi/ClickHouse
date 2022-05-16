@@ -118,6 +118,7 @@ then
     fi
 
     cp -r ../docker/test/performance-comparison "$PERF_OUTPUT"/scripts ||:
+    prepare_combined_output "$PERF_OUTPUT"
 
     # We have to know the revision that corresponds to this binary build.
     # It is not the nominal SHA from pull/*/head, but the pull/*/merge, which is
