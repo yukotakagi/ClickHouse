@@ -281,6 +281,12 @@ def parse_env_variables(
     return result
 
 
+def dir_name(name: str) -> str:
+    if not os.path.isabs(name):
+        name = os.path.abspath(os.path.join(os.getcwd(), name))
+    return name
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     parser = argparse.ArgumentParser(
@@ -294,12 +300,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--clickhouse-repo-path",
-        default=os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir
-        ),
+        default=os.path.join(os.path.dirname(SCRIPT_PATH), os.pardir, os.pardir),
+        type=dir_name,
         help="ClickHouse git repository",
     )
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir", type=dir_name, required=True)
     parser.add_argument("--build-type", choices=("debug", ""), default="")
     parser.add_argument(
         "--compiler",
@@ -336,6 +341,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ccache_dir",
         default=os.getenv("HOME", "") + "/.ccache",
+        type=dir_name,
         help="a directory with ccache",
     )
     parser.add_argument("--distcc-hosts", nargs="+")
@@ -356,15 +362,10 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    if not os.path.isabs(args.output_dir):
-        args.output_dir = os.path.abspath(os.path.join(os.getcwd(), args.output_dir))
 
     image_name = f"clickhouse/{IMAGE_TYPE}-builder"
 
-    if not os.path.isabs(args.clickhouse_repo_path):
-        ch_root = os.path.abspath(os.path.join(os.getcwd(), args.clickhouse_repo_path))
-    else:
-        ch_root = args.clickhouse_repo_path
+    ch_root = args.clickhouse_repo_path
 
     if args.additional_pkgs and args.package_type != "deb":
         raise Exception("Can build additional packages only in deb build")
